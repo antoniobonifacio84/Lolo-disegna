@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#f1d3ae">
+<title>Il gioco di Lolo — Disegna e colora</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: #f1d3ae;
+    touch-action: none; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    font-family: "Comic Sans MS", "Chalkboard SE", "Baloo 2", system-ui, sans-serif;
+  }
+  canvas#game { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  .hud { position: fixed; z-index: 5; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); display: flex; gap: 10px; }
+  .hud button { width: 52px; height: 52px; border-radius: 50%; border: none; background: rgba(255,255,255,.8); font-size: 26px; cursor: pointer; box-shadow: 0 3px 0 rgba(0,0,0,.08); }
+  .hud button:focus-visible, #play:focus-visible, #albumClose:focus-visible { outline: 4px solid #6a7bd1; outline-offset: 3px; }
+  #start { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3vh; background: rgba(255,250,240,.6); transition: opacity .4s; }
+  #start.hide { opacity: 0; pointer-events: none; }
+  #start h1 { margin: 0; text-align: center; font-size: min(10vw, 11vh); color: #ff8fb1; text-shadow: 0 .05em 0 #fff, 0 .1em 0 rgba(0,0,0,.08); }
+  #start p { margin: 0; font-size: min(5vw, 5vh); color: #6a7bd1; }
+  #play { width: min(28vw, 28vh); height: min(28vw, 28vh); border-radius: 50%; border: none; background: #8fe3b0; color: #fff; font-size: min(12vw, 12vh); cursor: pointer; box-shadow: 0 1.2vh 0 #5fc48a; animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+  @media (prefers-reduced-motion: reduce) { #play { animation: none; } }
+  #album { position: fixed; inset: 0; z-index: 20; background: rgba(255,250,240,.96); display: none; flex-direction: column; align-items: center; padding: 3vh 3vw; box-sizing: border-box; }
+  #album.show { display: flex; }
+  #album h2 { margin: 0 0 2vh; color: #6a7bd1; font-size: min(6vw, 6vh); }
+  #albumGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(28vw, 150px), 1fr)); gap: 2vh 2vw; width: 100%; overflow-y: auto; flex: 1; align-content: start; }
+  #albumGrid canvas { width: 100%; aspect-ratio: 1; background: #fff; border-radius: 18px; box-shadow: 0 .6vh 0 rgba(0,0,0,.06); }
+  #albumEmpty { color: #8a7a96; font-size: min(4.5vw, 4.5vh); }
+  #albumClose { position: absolute; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: 56px; height: 56px; border-radius: 50%; border: none; background: #fff; font-size: 28px; cursor: pointer; box-shadow: 0 3px 0 rgba(0,0,0,.08); }
+</style>
+</head>
+<body>
+<canvas id="game" role="img" aria-label="Gioco: disegna il contorno di un oggetto toccando i puntini o ripassando la linea, poi coloralo e guardalo prendere vita"></canvas>
+
+<div class="hud">
+  <button id="btnAlbum" aria-label="Album dei disegni">📒</button>
+  <button id="btnSpeed" aria-label="Facile">🐢</button>
+  <button id="btnMute" aria-label="Spegni l'audio">🔊</button>
+  <button id="btnFull" aria-label="Schermo intero">⛶</button>
+</div>
+
+<div id="start">
+  <h1>Disegna e colora</h1>
+  <p>Disegna, colora… e guarda cosa succede! 🖍️</p>
+  <button id="play" aria-label="Gioca">▶</button>
+</div>
+
+<div id="album" role="dialog" aria-label="Album dei disegni di Lolo">
+  <button id="albumClose" aria-label="Chiudi l'album">✕</button>
+  <h2>I disegni di Lolo 📒</h2>
+  <div id="albumGrid"></div>
+  <div id="albumEmpty">Ancora nessun disegno: disegnane uno! 🖍️</div>
+</div>
+
+<script>
+'use strict';
+/* =========================================================
+   Il gioco di Lolo — Disegna e colora
+   1) Disegna il contorno: 🐢 tocca il puntino che brilla, uno dopo
+      l'altro · 🐇 ripassa la linea con il dito.
+   2) Colora: scegli un barattolo e tocca una parte (colori liberi).
+   3) L'oggetto prende vita (occhi, sorriso, si muove, fa un suono)
+      e finisce nell'album.
+   30 oggetti di uso comune, in ordine casuale, con forme geometriche.
+   ========================================================= */
+
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+
+// ---------- helpers ----------
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function easeOutBack(x) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+function rr(c, x, y, w, h, r) { r = Math.max(0, Math.min(r, w / 2, h / 2)); c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
+function ell(c, x, y, rx, ry, rot) { c.beginPath(); c.ellipse(x, y, Math.max(.1, rx), Math.max(.1, ry), rot || 0, 0, TAU); }
+function circ(c, x, y, r) { c.beginPath(); c.arc(x, y, Math.max(.1, r), 0, TAU); }
+function starPath(c, x, y, r, rot) { c.beginPath(); for (let i = 0; i < 10; i++) { const a = rot + i * Math.PI / 5 - Math.PI / 2, rad = i % 2 ? r * .48 : r; i ? c.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad) : c.moveTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad); } c.closePath(); }
+const INK = '#5a4a6a';
+const RAINBOW = ['#ffadad', '#ffd6a5', '#fdffb6', '#caffbf', '#9bf6ff', '#a0c4ff', '#bdb2ff'];
+
+// ---------- 🐢 facile (puntini) / 🐇 normale (ripassa col dito) ----------
+const SPEEDS = {
+  lento:   { icon: '🐢', label: 'Facile: tocca i puntini' },
+  normale: { icon: '🐇', label: 'Normale: ripassa la linea' },
+};
+const SPEED_ORDER = ['lento', 'normale'];
+let speedKey = 'lento';
+try { const s = localStorage.getItem('lolo-speed'); if (SPEEDS[s]) speedKey = s; } catch (e) {}
+const SPD = () => SPEEDS[speedKey];
+const dotsMode = () => speedKey === 'lento';
+
+// =========================================================
+//  AUDIO
+// =========================================================
+let ac = null, master = null, noiseBuf = null, muted = false;
+function initAudio() {
+  if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+  ac = new AC();
+  const comp = ac.createDynamicsCompressor(); master = ac.createGain(); master.gain.value = .7;
+  master.connect(comp); comp.connect(ac.destination);
+  noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+const canPlay = () => ac && !muted;
+function env(g, t0, a, d, vol) { g.gain.setValueAtTime(.0001, t0); g.gain.exponentialRampToValueAtTime(vol, t0 + a); g.gain.exponentialRampToValueAtTime(.0001, t0 + a + d); }
+function tone(f0, f1, dur, type, vol, delay) {
+  if (!canPlay()) return;
+  const t0 = ac.currentTime + (delay || 0), o = ac.createOscillator(), g = ac.createGain();
+  o.type = type || 'sine'; o.frequency.setValueAtTime(f0, t0); if (f1 && f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+  env(g, t0, .01, dur, vol || .2); o.connect(g); g.connect(master); o.start(t0); o.stop(t0 + dur + .05);
+}
+function noise(dur, f0, f1, vol, type, delay) {
+  if (!canPlay()) return;
+  const t0 = ac.currentTime + (delay || 0), s = ac.createBufferSource(); s.buffer = noiseBuf;
+  const f = ac.createBiquadFilter(); f.type = type || 'bandpass'; f.Q.value = 1.2; f.frequency.setValueAtTime(f0, t0); f.frequency.exponentialRampToValueAtTime(f1, t0 + dur);
+  const g = ac.createGain(); env(g, t0, .02, dur, vol); s.connect(f); f.connect(g); g.connect(master); s.start(t0); s.stop(t0 + dur + .05);
+}
+const NOTES = [523, 587, 659, 784, 880, 1047, 1175, 1319];
+const sfx = {
+  dot(i) { const f = NOTES[i % NOTES.length]; tone(f, f, .25, 'triangle', .14); tone(f * 2, f * 2, .15, 'sine', .04); },
+  scribble() { noise(.06, 2500, 1800, .03, 'bandpass'); },
+  pathDone() { tone(1047, 1047, .15, 'sine', .12); tone(1319, 1319, .25, 'sine', .1, .1); },
+  allDone() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f, i === 3 ? .4 : .12, 'triangle', .15, i * .1)); },
+  pickColor() { tone(700, 900, .08, 'sine', .12); },
+  fill() { noise(.25, 1500, 400, .1, 'lowpass'); tone(300, 600, .15, 'sine', .14); },
+  fanfare() { [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, f, i === 4 ? .5 : .13, 'triangle', .17, i * .11)); },
+  // suoni degli oggetti che prendono vita
+  boing() { tone(140, 520, .45, 'sine', .28); },
+  chime() { [1319, 1568, 2093].forEach((f, i) => tone(f, f, .35, 'sine', .08, i * .12)); },
+  tick() { for (let i = 0; i < 6; i++) tone(i % 2 ? 1400 : 1000, i % 2 ? 1400 : 1000, .04, 'square', .05, i * .4); },
+  gnam() { tone(300, 220, .14, 'triangle', .18); tone(340, 240, .18, 'triangle', .18, .22); noise(.1, 900, 400, .06, 'lowpass', .05); },
+  crunch() { for (let i = 0; i < 3; i++) noise(.08, 3000, 1200, .14, 'bandpass', i * .16); },
+  whoosh() { noise(.5, 300, 2500, .12); },
+  clink() { tone(2093, 2093, .4, 'triangle', .08); tone(2637, 2637, .3, 'sine', .05, .05); },
+  pop() { tone(400, 1000, .1, 'triangle', .14); },
+  flip() { for (let i = 0; i < 3; i++) noise(.06, 3000, 2000, .07, 'highpass', i * .12); },
+  puff() { noise(.4, 800, 200, .16, 'lowpass'); },
+  dice() { for (let i = 0; i < 5; i++) tone(900 + i * 60, 800, .03, 'square', .05, i * .09); },
+  ring() { for (let i = 0; i < 2; i++) for (let j = 0; j < 8; j++) tone(j % 2 ? 1200 : 1500, j % 2 ? 1200 : 1500, .045, 'square', .04, i * .7 + j * .05); },
+  toot() { tone(392, 392, .18, 'sawtooth', .07); tone(523, 523, .35, 'sawtooth', .07, .2); },
+  horn() { tone(220, 220, .5, 'sawtooth', .07); },
+  slurp() { noise(.45, 400, 2500, .12, 'bandpass'); },
+  rain() { for (let i = 0; i < 14; i++) tone(1800 + Math.random() * 1500, 1500, .02, 'sine', .04, i * .1); },
+  brum() { tone(90, 140, .7, 'sawtooth', .08); tone(120, 180, .5, 'sawtooth', .06, .5); },
+  glug() { for (let i = 0; i < 4; i++) tone(300 + i * 60, 600 + i * 60, .1, 'sine', .12, i * .18); },
+  walk() { tone(300, 250, .07, 'triangle', .14); tone(300, 250, .07, 'triangle', .14, .3); tone(300, 250, .07, 'triangle', .14, .6); },
+  bloom() { [523, 659, 784, 988, 1175].forEach((f, i) => tone(f, f, .25, 'sine', .1, i * .08)); },
+  blub() { for (let i = 0; i < 3; i++) tone(300 + i * 80, 700 + i * 80, .08, 'sine', .11, i * .12); },
+};
+
+// ---------- voce: solo 'Bravo Lolo!' / 'Bravissimo Lolo!' / 'Wow!' ----------
+const VOICE_CLIPS = {}; // es. { 'Bravo Lolo!': 'bravo-lolo.mp3' } → registrazione di papà/mamma
+const clipCache = {};
+let voiceIt = null, voiceEs = null, voiceEn = null;
+function pickVoices() {
+  if (!('speechSynthesis' in window)) return;
+  const all = speechSynthesis.getVoices();
+  const best = re => { const vs = all.filter(v => re.test(v.lang)); const sc = v => (/natural|neural|enhanced|premium/i.test(v.name) ? 8 : 0) + (/google/i.test(v.name) ? 4 : 0) + (v.localService ? 1 : 0); return vs.sort((a, b) => sc(b) - sc(a))[0] || null; };
+  voiceIt = best(/^it([-_]|$)/i); voiceEs = best(/^es([-_]|$)/i); voiceEn = best(/^en([-_]|$)/i);
+}
+if ('speechSynthesis' in window) { pickVoices(); if (speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', pickVoices); }
+function speak(text) {
+  if (muted) return;
+  const src = VOICE_CLIPS[text];
+  if (src) { try { const a = clipCache[text] || (clipCache[text] = new Audio(src)); a.currentTime = 0; const p = a.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {} return; }
+  if (!('speechSynthesis' in window)) return;
+  if (!voiceIt && !voiceEs && !voiceEn) pickVoices();
+  const isWow = text === 'Wow!', v = voiceIt || voiceEs || (isWow ? voiceEn : null);
+  if (!v) return;
+  const say = isWow ? (v === voiceEn ? 'Wooow!' : 'Uaau!') : text;
+  try { const u = new SpeechSynthesisUtterance(say); u.voice = v; u.lang = v.lang; u.rate = isWow ? .7 : .9; u.pitch = 1; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) {}
+}
+
+// =========================================================
+//  GEOMETRIA — tutte le forme in coordinate da -1 a 1 (y verso il basso)
+//  Le linee sono liste di punti; le forme chiuse ripetono il primo punto alla fine.
+// =========================================================
+function C(cx, cy, r, n) { n = n || 72; const p = []; for (let i = 0; i <= n; i++) { const a = -Math.PI / 2 + i / n * TAU; p.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); } return p; }
+function E(cx, cy, rx, ry, n) { n = n || 72; const p = []; for (let i = 0; i <= n; i++) { const a = -Math.PI / 2 + i / n * TAU; p.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return p; }
+function ARC(cx, cy, r, a0, a1, n) { n = n || 40; const p = []; for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; p.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); } return p; }
+function RR(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2); const p = [];
+  const corner = (cx, cy, a0) => { for (let i = 0; i <= 6; i++) { const a = a0 + i / 6 * Math.PI / 2; p.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); } };
+  corner(x + w - r, y + r, -Math.PI / 2); corner(x + w - r, y + h - r, 0); corner(x + r, y + h - r, Math.PI / 2); corner(x + r, y + r, Math.PI);
+  p.push(p[0]); return p;
+}
+function P(...pts) { return [...pts, pts[0]]; }
+function L(x1, y1, x2, y2) { return [[x1, y1], [x2, y2]]; }
+function BAND(cx, cy, r, y0, y1) { // fascia di cerchio tra y0 e y1
+  const a0 = Math.asin(clamp((y0 - cy) / r, -1, 1)), a1 = Math.asin(clamp((y1 - cy) / r, -1, 1)), p = [], n = 24;
+  for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; p.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]); }
+  for (let i = n; i >= 0; i--) { const a = a0 + (a1 - a0) * i / n; p.push([cx - Math.cos(a) * r, cy + Math.sin(a) * r]); }
+  p.push(p[0]); return p;
+}
+function LEAF(cx, cy, len, w, ang) { // foglia/petalo dalla base (cx,cy) verso l'angolo ang
+  const p = [], n = 16, ca = Math.cos(ang), sa = Math.sin(ang);
+  const put = (u, v) => p.push([cx + u * ca - v * sa, cy + u * sa + v * ca]);
+  for (let i = 0; i <= n; i++) { const t = i / n; put(t * len, Math.sin(t * Math.PI) * w); }
+  for (let i = n - 1; i >= 0; i--) { const t = i / n; put(t * len, -Math.sin(t * Math.PI) * w); }
+  return p;
+}
+function WAVY(cx, cy, r, amp, k, n) { n = n || 96; const p = []; for (let i = 0; i <= n; i++) { const a = -Math.PI / 2 + i / n * TAU, rr0 = r + Math.sin(a * k) * amp; p.push([cx + Math.cos(a) * rr0, cy + Math.sin(a) * rr0]); } return p; }
+function SLICE(cx, cy, r, a0, a1) { return [[cx, cy], ...ARC(cx, cy, r, a0, a1, 14), [cx, cy]]; }
+const part = (...polys) => ({ polys, rule: 'nonzero' });
+const partEO = (...polys) => ({ polys, rule: 'evenodd' }); // con il buco (ciambella, cornice…)
+const tri = (tip, l, r) => P(tip, l, r);
+
+// =========================================================
+//  I 30 OGGETTI
+//  trace: le linee da disegnare (contorno) · parts: le zone da colorare (in ordine di disegno)
+//  deco: linee di dettaglio · face: [x, y, grandezza] della faccina · life: come prende vita
+//  level 1 = una forma sola (per iniziare in 🐢) · level 2 = forme insieme
+// =========================================================
+function buildObjects() {
+  // REGOLA: "trace" = tutte le linee che fanno capire cos'è (contorni principali + dettagli importanti, es. lancette).
+  // I dettagli minuscoli (zuccherini, puntini, righe) restano in "deco" già disegnati.
+  const O = {};
+  const chord = (r, y) => { const w = Math.sqrt(Math.max(0, r * r - y * y)); return L(-w, y, w, y); };
+  // ⚪ CERCHIO
+  O.palla = { name: 'la palla', emoji: '🏐', level: 1, trace: [C(0, 0, .8), chord(.8, -.27), chord(.8, .27)],
+    parts: [part(BAND(0, 0, .8, -.8, -.27)), part(BAND(0, 0, .8, -.27, .27)), part(BAND(0, 0, .8, .27, .8))],
+    face: [0, 0, .4], life: { anim: 'bounce', fx: 'stars', snd: 'boing' } };
+  const spikes = []; for (let i = 0; i <= 16; i++) { const a = -Math.PI / 2 + i * TAU / 16, r = i % 2 ? .66 : .97; spikes.push([Math.cos(a) * r, Math.sin(a) * r]); }
+  O.sole = { name: 'il sole', emoji: '☀️', level: 1, trace: [spikes, C(0, 0, .52)],
+    parts: [partEO(spikes, C(0, 0, .52)), part(C(0, 0, .52))],
+    face: [0, 0, .38], life: { anim: 'pulse', fx: 'sparkle', snd: 'chime' } };
+  const orLeaf = LEAF(.02, -.6, .45, .14, -.5);
+  O.arancia = { name: "l'arancia", emoji: '🍊', level: 1, trace: [C(0, .1, .72), orLeaf, L(0, -.6, -.04, -.74)],
+    parts: [part(C(0, .1, .72)), part(orLeaf)],
+    deco: [C(-.3, .35, .02, 8), C(.25, -.1, .02, 8), C(.35, .45, .02, 8)], face: [0, .15, .4], life: { anim: 'roll', fx: 'stars', snd: 'boing' } };
+  const bellL = [...ARC(-.48, -.58, .25, Math.PI, TAU, 16), [-.73, -.58]], bellR = [...ARC(.48, -.58, .25, Math.PI, TAU, 16), [.23, -.58]];
+  O.orologio = { name: 'la sveglia', emoji: '⏰', level: 1,
+    trace: [C(0, .08, .72), C(0, .08, .56), L(0, .08, 0, -.3), L(0, .08, .28, .08), bellL, bellR],
+    parts: [part(bellL, bellR), partEO(C(0, .08, .72), C(0, .08, .56)), part(C(0, .08, .56))],
+    deco: [L(0, -.42, 0, -.36), L(.48, .08, .42, .08), L(0, .58, 0, .52), L(-.48, .08, -.42, .08), L(-.45, .72, -.6, .9), L(.45, .72, .6, .9)],
+    face: [0, .36, .18], life: { anim: 'shake', fx: 'notes', snd: 'tick' } };
+  O.ciambella = { name: 'la ciambella', emoji: '🍩', level: 1, trace: [C(0, 0, .82), WAVY(0, 0, .67, .05, 8), C(0, 0, .3)],
+    parts: [partEO(C(0, 0, .82), C(0, 0, .3)), partEO(WAVY(0, 0, .67, .05, 8), C(0, 0, .4))],
+    deco: [L(-.45, -.25, -.38, -.32), L(.42, -.3, .5, -.22), L(.15, .5, .25, .52), L(-.5, .25, -.42, .32), L(.5, .2, .55, .3), C(0, 0, .4)],
+    face: [0, -.53, .15], life: { anim: 'pulse', fx: 'crumbs', snd: 'gnam' } };
+  O.bottone = { name: 'il bottone', emoji: '🔘', level: 1, trace: [C(0, 0, .78), C(0, 0, .56), L(-.18, -.18, .18, .18), L(.18, -.18, -.18, .18)],
+    parts: [partEO(C(0, 0, .78), C(0, 0, .56)), part(C(0, 0, .56)), part(C(-.18, -.18, .08), C(.18, -.18, .08), C(-.18, .18, .08), C(.18, .18, .08))],
+    deco: [L(-.18, -.18, .18, .18), L(.18, -.18, -.18, .18)], face: [0, .38, .13], life: { anim: 'spin', fx: 'sparkle', snd: 'whoosh' } };
+  const fork = P([-.92, .57], [-.92, -.05], [-.98, -.12], [-.98, -.5], [-.78, -.5], [-.78, -.12], [-.84, -.05], [-.84, .57]);
+  const knife = P([.84, .57], [.84, -.5], [.9, -.56], [.96, -.45], [.96, .57]);
+  O.piatto = { name: 'il piatto', emoji: '🍽️', level: 1, trace: [E(0, .05, .6, .42), E(0, .05, .42, .28), fork, knife],
+    parts: [partEO(E(0, .05, .6, .42), E(0, .05, .42, .28)), part(E(0, .05, .42, .28)), part(fork), part(knife)],
+    deco: [L(-.93, -.5, -.93, -.25), L(-.88, -.5, -.88, -.25), L(-.83, -.5, -.83, -.25)],
+    face: [0, .05, .2], life: { anim: 'wobble', fx: 'sparkle', snd: 'clink' } };
+  // ⬜ QUADRATO E RETTANGOLO
+  const bow1 = LEAF(0, -.32, .42, .17, -2.6), bow2 = LEAF(0, -.32, .42, .17, -.55);
+  O.regalo = { name: 'il regalo', emoji: '🎁', level: 1, trace: [RR(-.72, -.3, 1.44, 1.05, .06), L(0, -.3, 0, .75), L(-.72, .21, .72, .21), bow1, bow2],
+    parts: [part(RR(-.72, -.3, 1.44, 1.05, .06)), part(RR(-.12, -.3, .24, 1.05, 0), RR(-.72, .1, 1.44, .22, 0)), part(bow1, bow2)],
+    face: [-.42, -.1, .16], life: { anim: 'hop', fx: 'stars', snd: 'pop' } };
+  const bookOut = P([-.95, -.55], [-.5, -.62], [0, -.48], [.5, -.62], [.95, -.55], [.95, .6], [.5, .55], [0, .68], [-.5, .55], [-.95, .6]);
+  const pageL = P([-.86, -.47], [-.5, -.53], [-.04, -.4], [-.04, .58], [-.5, .46], [-.86, .51]), pageR = P([.86, -.47], [.5, -.53], [.04, -.4], [.04, .58], [.5, .46], [.86, .51]);
+  O.libro = { name: 'il libro', emoji: '📖', level: 1, trace: [bookOut, pageL, pageR],
+    parts: [part(bookOut), part(pageL), part(pageR)],
+    deco: [L(.15, -.25, .75, -.32), L(.15, -.1, .75, -.17), L(.15, .05, .75, -.02), L(.15, .2, .6, .14), L(-.75, -.32, -.15, -.25), L(-.75, -.17, -.15, -.1)],
+    face: [-.45, .2, .18], life: { anim: 'flip', fx: 'sparkle', snd: 'flip' } };
+  const panes = [RR(-.58, -.58, .5, .5, .04), RR(.08, -.58, .5, .5, .04), RR(-.58, .08, .5, .5, .04), RR(.08, .08, .5, .5, .04)];
+  const curtL = P([-.82, -.85], [-.3, -.85], [-.5, -.45], [-.62, .15], [-.82, .25]), curtR = P([.82, -.85], [.3, -.85], [.5, -.45], [.62, .15], [.82, .25]);
+  O.finestra = { name: 'la finestra', emoji: '🪟', level: 1, trace: [RR(-.72, -.72, 1.44, 1.44, .06), L(0, -.72, 0, .72), L(-.72, 0, .72, 0), curtL, curtR],
+    parts: [partEO(RR(-.72, -.72, 1.44, 1.44, .06), ...panes), part(...panes), part(curtL, curtR)],
+    deco: [L(-.9, -.88, .9, -.88)], face: [0, .3, .16], life: { anim: 'pulse', fx: 'light', glow: 1, snd: 'chime' } };
+  const pillow = []; { const cx = [[-.85, -.6], [.85, -.6], [.85, .6], [-.85, .6]];
+    for (let s = 0; s < 4; s++) { const a = cx[s], b = cx[(s + 1) % 4], m = [(a[0] + b[0]) / 2 * .86, (a[1] + b[1]) / 2 * .8];
+      for (let i = 0; i < 16; i++) { const t = i / 16; pillow.push([(1 - t) * (1 - t) * a[0] + 2 * (1 - t) * t * m[0] + t * t * b[0], (1 - t) * (1 - t) * a[1] + 2 * (1 - t) * t * m[1] + t * t * b[1]]); } }
+    pillow.push(pillow[0]); }
+  const pillowIn = pillow.map(([x, y]) => [x * .78, y * .74]);
+  O.cuscino = { name: 'il cuscino', emoji: '🛏️', level: 1, trace: [pillow, pillowIn],
+    parts: [partEO(pillow, pillowIn), part(pillowIn), part(C(0, .25, .07))],
+    deco: [L(-.15, .25, -.06, .25), L(.06, .25, .15, .25)], face: [0, -.12, .24], life: { anim: 'squash', fx: 'puff', snd: 'puff' } };
+  // dado "in 3D": faccia davanti + sopra + lato, così si capisce che è un dado
+  const dFront = RR(-.75, -.35, 1.05, 1.05, .12), dTop = P([-.75, -.35], [-.4, -.75], [.65, -.75], [.3, -.35]), dSide = P([.3, -.35], [.65, -.75], [.65, .3], [.3, .7]);
+  O.dado = { name: 'il dado', emoji: '🎲', level: 1, trace: [dFront, dTop, dSide],
+    parts: [part(dTop), part(dSide), part(dFront), part(C(-.5, -.1, .1), C(.05, -.1, .1), C(-.22, .18, .1), C(-.5, .45, .1), C(.05, .45, .1))],
+    face: null, life: { anim: 'spin', fx: 'stars', snd: 'dice' } };
+  O.telefono = { name: 'il telefono', emoji: '📱', level: 1, trace: [RR(-.45, -.85, .9, 1.7, .16), RR(-.33, -.66, .66, 1.12, .06), C(0, .7, .08)],
+    parts: [part(RR(-.45, -.85, .9, 1.7, .16)), part(RR(-.33, -.66, .66, 1.12, .06)), part(C(0, .7, .08))],
+    deco: [L(-.1, -.76, .1, -.76), C(.22, -.76, .025, 12)], face: [0, -.1, .24], life: { anim: 'shake', fx: 'notes', snd: 'ring' } };
+  const st1 = RR(-.6, -.47, .38, .24, .05), st2 = RR(.22, -.47, .38, .24, .05);
+  O.mattoncino = { name: 'il mattoncino', emoji: '🧱', level: 1, trace: [RR(-.82, -.25, 1.64, .8, .06), st1, st2],
+    parts: [part(RR(-.82, -.25, 1.64, .8, .06)), part(st1, st2)], face: [0, .15, .24], life: { anim: 'hop', fx: 'stars', snd: 'boing' } };
+  // 🔺 TRIANGOLO
+  const crustArc = []; for (let i = 0; i <= 16; i++) { const t = i / 16; crustArc.push([-.72 + 1.44 * t, -.5 - .16 * Math.sin(t * Math.PI)]); }
+  const wP = y => .72 * (.85 - y) / 1.35;
+  const pep1 = C(-.25, -.12, .1, 24), pep2 = C(.22, 0, .1, 24);
+  O.pizza = { name: 'la pizza', emoji: '🍕', level: 1, trace: [[[0, .85], ...crustArc, [0, .85]], L(-wP(-.38), -.38, wP(-.38), -.38), pep1, pep2],
+    parts: [part([...crustArc, [wP(-.38), -.38], [-wP(-.38), -.38], crustArc[0]]), part(P([-wP(-.38), -.38], [wP(-.38), -.38], [0, .85])), part(pep1, pep2, C(0, .5, .07))],
+    face: [0, .22, .17], life: { anim: 'pulse', fx: 'crumbs', snd: 'gnam' } };
+  const wH = y => .55 * (y + .85) / 1.47;
+  O.cappellino = { name: 'il cappellino', emoji: '🥳', level: 1, trace: [tri([0, -.85], [-.55, .62], [.55, .62]), L(-wH(-.25), -.25, wH(-.25), -.25), L(-wH(-.05), -.05, wH(-.05), -.05), C(0, -.9, .13)],
+    parts: [part(tri([0, -.85], [-.55, .62], [.55, .62])), part(P([-wH(-.25), -.25], [wH(-.25), -.25], [wH(-.05), -.05], [-wH(-.05), -.05]), P([-wH(.45), .45], [wH(.45), .45], [.55, .62], [-.55, .62])), part(C(0, -.9, .13))],
+    face: [0, .2, .18], life: { anim: 'wobble', fx: 'notes', snd: 'toot' } };
+  O.bandierina = { name: 'la bandierina', emoji: '🚩', level: 1, trace: [L(-.55, -.85, -.55, .85), tri([-.5, -.82], [.72, -.46], [-.5, -.1]), C(-.55, -.92, .08)],
+    parts: [part(RR(-.6, -.86, .1, 1.74, .04)), part(tri([-.5, -.82], [.72, -.46], [-.5, -.1])), part(C(-.55, -.92, .08))],
+    face: [-.15, -.46, .15], life: { anim: 'wave', fx: 'sparkle', snd: 'whoosh' } };
+  const hull = P([-.85, .2], [.85, .2], [.55, .62], [-.55, .62]), sailB = tri([.04, -.85], [.04, .1], [.7, .1]), sailS = tri([-.06, -.6], [-.06, .1], [-.5, .1]);
+  O.barchetta = { name: 'la barchetta', emoji: '⛵', level: 1, trace: [hull, sailB, sailS, L(0, -.9, 0, .2)],
+    parts: [part(RR(-.04, -.9, .08, 1.12, .03)), part(sailB), part(sailS), part(hull)],
+    deco: [ARC(-.6, .82, .18, Math.PI, TAU, 10), ARC(-.2, .82, .18, Math.PI, TAU, 10), ARC(.2, .82, .18, Math.PI, TAU, 10), ARC(.6, .82, .18, Math.PI, TAU, 10)], // le onde
+    face: [0, .4, .15], life: { anim: 'sail', fx: 'bubbles', snd: 'horn' } };
+  // 🔷 FORME INSIEME
+  const chimney = RR(.32, -.72, .17, .42, .03), door = RR(-.42, .32, .3, .48, .1), win = RR(.15, .12, .3, .28, .04);
+  O.casa = { name: 'la casa', emoji: '🏠', level: 2, trace: [tri([0, -.82], [-.75, -.05], [.75, -.05]), RR(-.6, -.05, 1.2, .85, .04), door, win, chimney],
+    parts: [part(chimney), part(RR(-.6, -.05, 1.2, .85, .04)), part(tri([0, -.82], [-.75, -.05], [.75, -.05])), part(door), part(win)],
+    deco: [L(.3, .12, .3, .4), L(.15, .26, .45, .26), C(-.18, .57, .025, 10)],
+    face: [0, -.3, .16], life: { anim: 'pulse', fx: 'light', glow: 4, snd: 'chime' } };
+  O.tazza = { name: 'la tazza', emoji: '☕', level: 2, trace: [RR(-.62, -.5, 1.0, 1.15, .14), ARC(.42, .05, .3, -1.35, 1.35, 24), ARC(.42, .05, .16, -1.2, 1.2, 16), L(-.62, -.14, .38, -.14), L(-.62, .06, .38, .06)],
+    parts: [partEO(C(.42, .05, .3), C(.42, .05, .16)), part(RR(-.62, -.5, 1.0, 1.15, .14)), part(RR(-.62, -.14, 1.0, .2, 0))],
+    deco: [E(-.12, -.5, .5, .06)], face: [-.12, .32, .2], life: { anim: 'wobble', fx: 'steam', snd: 'slurp' } };
+  const ombA = [], ombB = []; for (let k = 0; k < 4; k++) (k % 2 ? ombB : ombA).push(SLICE(0, 0, .85, Math.PI + k * Math.PI / 4, Math.PI + (k + 1) * Math.PI / 4));
+  const ray = a => L(0, 0, Math.cos(a) * .85, Math.sin(a) * .85);
+  O.ombrello = { name: "l'ombrello", emoji: '☂️', level: 2, trace: [[...ARC(0, 0, .85, Math.PI, TAU, 40), [-.85, 0]], ray(Math.PI * 1.25), ray(Math.PI * 1.5), ray(Math.PI * 1.75), [[0, 0], ...ARC(.15, .72, .15, Math.PI, 0, 12)]], // manico con il gancio
+    parts: [part(...ombA), part(...ombB), part(RR(-.04, 0, .08, .72, .03))],
+    face: [0, -.3, .16], life: { anim: 'wobble', fx: 'rain', snd: 'rain' } };
+  const apple = []; for (let i = 0; i <= 96; i++) { const t = i / 96 * TAU, c = Math.cos(t); let y = -c * .72; if (c > .8) y += (c - .8) * 1.0; if (c < -.9) y -= (-.9 - c) * .6; apple.push([Math.sin(t) * .8, y + .08]); }
+  const apLeaf = LEAF(.05, -.55, .42, .15, -.6), apStem = RR(-.04, -.76, .08, .28, .03);
+  O.mela = { name: 'la mela', emoji: '🍎', level: 2, trace: [apple, apStem, apLeaf],
+    parts: [part(apple), part(apStem), part(apLeaf)], deco: [ARC(-.35, -.05, .25, Math.PI * 1.1, Math.PI * 1.45, 8)],
+    face: [0, .15, .34], life: { anim: 'wobble', fx: 'crumbs', snd: 'crunch' } };
+  O.gelato = { name: 'il gelato', emoji: '🍦', level: 2, trace: [tri([-.48, -.1], [.48, -.1], [0, .92]), C(0, -.4, .5), C(0, -.92, .11)],
+    parts: [part(tri([-.48, -.1], [.48, -.1], [0, .92])), part(C(0, -.4, .5)), part(C(0, -.92, .11))],
+    deco: [L(-.3, .15, .15, .62), L(.3, .15, -.15, .62), L(-.38, 0, .32, .45)], face: [0, -.4, .26], life: { anim: 'wobble', fx: 'sparkle', snd: 'slurp' } };
+  const cabin = P([-.48, -.12], [-.3, -.58], [.32, -.58], [.55, -.12]), carWin = RR(-.24, -.5, .5, .3, .05);
+  O.macchinina = { name: 'la macchinina', emoji: '🚗', level: 2, trace: [RR(-.88, -.12, 1.76, .55, .14), cabin, carWin, C(-.5, .45, .22), C(.5, .45, .22)],
+    parts: [part(cabin), part(RR(-.88, -.12, 1.76, .55, .14)), part(carWin), part(C(-.5, .45, .22), C(.5, .45, .22))],
+    deco: [C(-.5, .45, .08), C(.5, .45, .08), RR(.68, .0, .14, .1, .03)], face: [-.05, .14, .14], life: { anim: 'drive', fx: 'puff', snd: 'brum' } };
+  const dome = [...ARC(0, .12, .55, Math.PI, TAU, 30), [-.55, .12]];
+  O.cappello = { name: 'il cappello', emoji: '👒', level: 2, trace: [dome, E(0, .14, .92, .2), L(-.53, -.04, .53, -.04)],
+    parts: [part(E(0, .14, .92, .2)), part(dome), part(RR(-.53, -.04, 1.06, .14, 0))],
+    deco: [LEAF(.42, -.02, .3, .09, -.6)], face: [0, -.22, .16], life: { anim: 'hop', fx: 'sparkle', snd: 'whoosh' } };
+  const spiral = []; for (let i = 0; i <= 90; i++) { const a = i / 90 * TAU * 2.6, r = .04 + i / 90 * .48; spiral.push([Math.cos(a) * r, -.32 + Math.sin(a) * r]); }
+  O.leccalecca = { name: 'il lecca-lecca', emoji: '🍭', level: 2, trace: [C(0, -.32, .56), spiral, L(0, .24, 0, .95)],
+    parts: [part(RR(-.05, .2, .1, .78, .04)), partEO(C(0, -.32, .56), C(0, -.32, .3)), part(C(0, -.32, .3))],
+    deco: [spiral], face: null, life: { anim: 'spin', fx: 'sparkle', snd: 'whoosh' } };
+  const teat = [...ARC(0, -.52, .2, Math.PI, TAU, 20), [-.2, -.52]];
+  O.biberon = { name: 'il biberon', emoji: '🍼', level: 2, trace: [RR(-.36, -.32, .72, 1.15, .2), teat, RR(-.42, -.54, .84, .24, .07)],
+    parts: [part(RR(-.36, -.32, .72, 1.15, .2)), part(teat), part(RR(-.42, -.54, .84, .24, .07))],
+    deco: [L(.14, 0, .3, 0), L(.14, .2, .3, .2), L(.14, .4, .3, .4)], face: [-.06, .3, .18], life: { anim: 'wobble', fx: 'bubbles', snd: 'glug' } };
+  // scarpetta da ginnastica: tomaia, suola, punta e lacci
+  const upper = P([-.85, .3], [-.85, -.25], [-.55, -.32], [-.3, -.62], [0, -.62], [.12, -.3], [.6, -.15], [.85, .05], [.85, .3]);
+  const sole = RR(-.92, .25, 1.84, .22, .1), toe = P([.4, -.18], [.6, -.15], [.85, .05], [.85, .25], [.4, .25]);
+  O.scarpa = { name: 'la scarpa', emoji: '👟', level: 2, trace: [upper, sole, toe],
+    parts: [part(upper), part(toe), part(sole)],
+    deco: [L(-.28, -.48, -.02, -.4), L(-.32, -.34, -.02, -.26), L(-.36, -.2, -.04, -.12), C(-.62, .0, .05, 10)],
+    face: [-.45, .05, .16], life: { anim: 'walk', fx: 'stars', snd: 'walk' } };
+  const flower = []; for (let i = 0; i <= 120; i++) { const a = -Math.PI / 2 + i / 120 * TAU, r = .5 + .18 * Math.abs(Math.cos(3 * a)); flower.push([Math.cos(a) * r, -.25 + Math.sin(a) * r]); }
+  const flLeaf = LEAF(0, .55, .42, .14, -.6);
+  O.fiore = { name: 'il fiore', emoji: '🌸', level: 2, trace: [flower, C(0, -.25, .24), L(0, .43, 0, .95), flLeaf],
+    parts: [part(RR(-.05, .4, .1, .55, .04), flLeaf), partEO(flower, C(0, -.25, .24)), part(C(0, -.25, .24))],
+    face: [0, -.25, .16], life: { anim: 'bloom', fx: 'sparkle', snd: 'bloom' } };
+  const fin = tri([-.25, -.38], [.05, -.62], [.2, -.36]);
+  O.pesciolino = { name: 'il pesciolino', emoji: '🐟', level: 2, trace: [E(-.08, 0, .62, .42), tri([.48, 0], [.92, -.42], [.92, .42]), fin],
+    parts: [part(tri([.48, 0], [.92, -.42], [.92, .42])), part(fin), part(E(-.08, 0, .62, .42))],
+    deco: [ARC(.1, 0, .3, -1.0, 1.0, 12)], face: [-.32, -.04, .18], life: { anim: 'swim', fx: 'bubbles', snd: 'blub' } };
+  return O;
+}
+const OBJECTS = buildObjects();
+const OBJ_KEYS = Object.keys(OBJECTS);
+const EASY_FIRST = 6; // in 🐢 i primi disegni sono forme semplici
+// sacchetto: escono tutti e 30 prima che uno si ripeta (in 🐢 i primi 6 sono forme semplici)
+let usedCycle = new Set(), drawnCount = 0;
+function nextObjectKey(prev) {
+  const easyPhase = dotsMode() && drawnCount < EASY_FIRST;
+  const pool = OBJ_KEYS.filter(k => !easyPhase || OBJECTS[k].level === 1);
+  let cand = pool.filter(k => !usedCycle.has(k) && k !== prev);
+  if (!cand.length) { usedCycle = new Set(); cand = pool.filter(k => k !== prev); } // giro finito: si ricomincia
+  const k = pick(cand);
+  usedCycle.add(k);
+  return k;
+}
+
+// =========================================================
+//  STATO
+// =========================================================
+const PALETTE = ['#ff8f8f', '#ffb26b', '#ffe28a', '#8fe3b0', '#8fc8ff', '#c9a7f5', '#ffadc2', '#c99a6b'];
+let W = 0, H = 0, DPR = 1, R = 40, sheet = { x: 0, y: 0, w: 0, h: 0 }, OC = { x: 0, y: 0, S: 100 }, pots = [];
+let started = false, time = 0;
+let objKey = 'palla', obj = OBJECTS.palla;
+let phase = 'trace';          // trace · color · alive
+let paths = [], tracing = false, lastScribble = 0;
+let colors = [], selColor = 0, phaseT = 0, aliveT = 0, saidBravo = false;
+let parts = [], texts = [], hintT = 0;
+
+function layout() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  R = Math.max(26, Math.min(W, H) * .075);
+  // foglio bianco al centro del tavolo
+  const mx = Math.max(16, W * .05), top = Math.max(76, H * .11);
+  sheet = { x: mx, y: top, w: W - mx * 2, h: H - top - Math.max(14, H * .03) };
+  const potR = clamp(Math.min(sheet.w / (PALETTE.length * 2.6), sheet.h * .07), 18, 44);
+  const potsY = sheet.y + sheet.h - potR * 1.6;
+  pots = PALETTE.map((c, i) => ({ c, r: potR, x: sheet.x + sheet.w / 2 + (i - (PALETTE.length - 1) / 2) * potR * 2.5, y: potsY }));
+  const areaH = potsY - potR * 1.6 - sheet.y;
+  OC = { x: sheet.x + sheet.w / 2, y: sheet.y + areaH * .53, S: Math.min(sheet.w * .36, areaH * .4) };
+  if (obj) preparePaths(true);
+  if (paintLayer) replayPaint(); // le pennellate restano anche ruotando il tablet
+}
+
+// ---------- preparazione del contorno da disegnare ----------
+const toPx = ([x, y]) => [OC.x + x * OC.S, OC.y + y * OC.S];
+function resample(pts, step) { // punti uniformi lungo la linea (in pixel)
+  const px = pts.map(toPx), out = [px[0]];
+  let carry = 0;
+  for (let i = 1; i < px.length; i++) {
+    const [x0, y0] = px[i - 1], [x1, y1] = px[i]; const seg = Math.hypot(x1 - x0, y1 - y0);
+    let d = step - carry;
+    while (d <= seg) { const t = d / seg; out.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t]); d += step; }
+    carry = seg - (d - step);
+  }
+  const last = px[px.length - 1], lo = out[out.length - 1];
+  if (Math.hypot(last[0] - lo[0], last[1] - lo[1]) > step * .3) out.push(last);
+  return out;
+}
+function preparePaths(keepProgress) {
+  const old = paths;
+  const step = Math.max(3, OC.S * .025);
+  paths = obj.trace.map((pts, i) => {
+    const s = resample(pts, step);
+    const closed = Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) < 1e-6;
+    // puntini (🐢): più la linea è lunga, più puntini (da 3 a 7); sulle linee chiuse l'ultimo coincide col primo
+    let len = 0; for (let k = 1; k < pts.length; k++) len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+    const nd = closed ? clamp(Math.round(len * 1.4), 3, 7) : clamp(Math.round(len * 1.4) + 1, 2, 6); // lineette corte: inizio e fine
+    const dots = []; for (let k = 0; k < nd; k++) dots.push(Math.round(k / (closed ? nd : nd - 1) * (s.length - 1)));
+    const p = { s, closed, dots, lit: dots.map(() => false), cov: new Uint8Array(s.length), done: false };
+    if (keepProgress && old[i]) { // dopo una rotazione dello schermo si tiene il lavoro fatto
+      const o = old[i];
+      p.done = o.done; p.lit = o.lit.slice(0, dots.length);
+      for (let k = 0; k < s.length; k++) p.cov[k] = o.cov[Math.round(k / Math.max(1, s.length - 1) * (o.s.length - 1))];
+    }
+    return p;
+  });
+}
+
+function startObject(key) {
+  objKey = key || nextObjectKey(objKey); obj = OBJECTS[objKey];
+  phase = 'trace'; phaseT = 0; aliveT = 0; saidBravo = false; tracing = false; painting = null;
+  colors = obj.parts.map(() => null);
+  parts = []; texts = []; hintT = 0;
+  preparePaths(false);
+  resetPaint();
+  addText(dotsMode() ? 'Tocca i puntini o scorrici sopra! ✨' : 'Ripassa le linee con il dito! ✏️', W / 2, sheet.y + R * .7, '#6a7bd1', R * .55, 2.5);
+}
+
+// =========================================================
+//  INPUT
+// =========================================================
+function addText(s, x, y, c, size, life) { texts.push({ s, x, y, t: 0, life: life || 1.4, c, size: size || R * .7 }); }
+function burst(x, y, n, colors0, sp, g) { for (let i = 0; i < n; i++) { const a = rand(0, TAU), v = rand(sp * .4, sp); parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rand(.6, 1.1), max: 1.1, c: pick(colors0), s: R * rand(.08, .18), star: Math.random() < .6, g: g == null ? 300 : g }); } }
+const dotR = () => Math.max(R * .7, 30);            // 🐢: quanto vicino deve passare il dito per accendere un puntino
+const traceTol = () => Math.max(18, OC.S * .11);    // 🐇: il dito deve stare vicino alla linea
+const TRACE_DONE = .96;                              // 🐇: linea ripassata quasi tutta → finita (le briciole si chiudono da sole)
+
+let activePointer = null, lastX = 0, lastY = 0;
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (!started) return;
+  initAudio();
+  activePointer = e.pointerId;
+  try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+  const x = e.clientX, y = e.clientY; lastX = x; lastY = y;
+  if (phase === 'trace') { tracing = true; traceAt(x, y); }
+  else if (phase === 'color') {
+    const pot = pots.find(o => Math.hypot(x - o.x, y - o.y) < o.r * 1.25);
+    if (pot) { selColor = pots.indexOf(pot); sfx.pickColor(); return; }
+    const k = partAt(x, y);
+    if (k >= 0 && !partDone[k]) { painting = { k }; paintAt(k, x, y); }
+  } else if (phase === 'alive') {
+    if (aliveT > 1.5 && nextBtnHit(x, y)) { nextObject(); return; }
+    if (Math.hypot(x - OC.x, y - OC.y) < OC.S * 1.1) { aliveT = Math.min(aliveT, .01); playLife(); } // ancora!
+  }
+}, { passive: false });
+cv.addEventListener('pointermove', e => {
+  if (!started || e.pointerId !== activePointer) return;
+  const x = e.clientX, y = e.clientY;
+  // il dito può muoversi veloce: controllo anche i punti in mezzo, così non si salta niente
+  const d = Math.hypot(x - lastX, y - lastY), stepPx = Math.max(4, traceTol() * .4), n = Math.max(1, Math.ceil(d / stepPx));
+  for (let i = 1; i <= n; i++) {
+    const ix = lastX + (x - lastX) * i / n, iy = lastY + (y - lastY) * i / n;
+    if (tracing && phase === 'trace') traceAt(ix, iy);
+    else if (painting && phase === 'color') paintAt(painting.k, ix, iy);
+  }
+  lastX = x; lastY = y;
+});
+const endPointer = e => { if (e.pointerId === activePointer) { activePointer = null; tracing = false; painting = null; } };
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---------- CONTORNO LIBERO: si parte da dove si vuole, in qualsiasi direzione e in qualsiasi ordine ----------
+function traceAt(x, y) {
+  for (const p of paths) {
+    if (p.done) continue;
+    if (dotsMode()) {
+      // 🐢: ogni puntino si accende toccandolo o passandoci sopra
+      p.dots.forEach((di, k) => {
+        if (p.lit[k]) return;
+        const q = p.s[di];
+        if (Math.hypot(x - q[0], y - q[1]) < dotR()) {
+          p.lit[k] = true; litCount++;
+          sfx.dot(litCount); burst(q[0], q[1], 8, ['#ffd34d', '#fff3a0', '#ffffff'], 160, 100);
+          // quando due puntini vicini sono accesi, la linea tra loro si disegna da sola
+          const n = p.dots.length;
+          for (const j of [k - 1, k + 1]) {
+            const jj = p.closed ? (j + n) % n : j;
+            if (jj < 0 || jj >= n || !p.lit[jj]) continue;
+            const lo = Math.min(k, jj), hi = Math.max(k, jj);
+            if (p.closed && lo === 0 && hi === n - 1) growSeg(p, p.dots[n - 1], p.s.length - 1); // tratto che chiude il giro
+            else growSeg(p, p.dots[lo], p.dots[hi]);
+          }
+        }
+      });
+      if (p.lit.every(Boolean)) finishPath(p);
+    } else {
+      // 🐇: si colora solo il pezzo di linea dove passa davvero il dito
+      const tol = traceTol(); let any = false;
+      for (let i = 0; i < p.s.length; i++) {
+        if (p.cov[i]) continue;
+        const q = p.s[i];
+        if (Math.abs(x - q[0]) < tol && Math.abs(y - q[1]) < tol && Math.hypot(x - q[0], y - q[1]) < tol) { p.cov[i] = 1; any = true; }
+      }
+      if (any) {
+        if (time - lastScribble > .09) { lastScribble = time; sfx.scribble(); }
+        if (coverage(p) >= TRACE_DONE) finishPath(p);
+      }
+    }
+  }
+}
+let litCount = 0;
+const coverage = p => { let c = 0; for (let i = 0; i < p.cov.length; i++) c += p.cov[i]; return c / p.cov.length; };
+function growSeg(p, i0, i1) { segAnims.push({ p, i0, i1, t: 0 }); } // il tratto si disegna in un attimo
+let segAnims = [];
+function finishPath(p) {
+  if (p.done) return;
+  p.done = true; p.cov.fill(1);
+  sfx.pathDone();
+  const m = p.s[Math.floor(p.s.length / 2)]; burst(m[0], m[1], 14, RAINBOW, 240, 150);
+  if (paths.every(q => q.done)) {
+    setTimeout(() => sfx.allDone(), 150);
+    addText('Bravo! Ora coloriamo! 🎨', W / 2, sheet.y + R * .7, '#ff8fb1', R * .65, 2.2);
+    setTimeout(() => { if (phase === 'trace') { phase = 'color'; phaseT = 0; tracing = false; buildPaintGrids(); } }, 500);
+  }
+}
+
+// ---------- COLORARE CON IL DITO ----------
+// 🐢: pennello grosso, basta colorare l'80% di una parte (il resto si completa da solo)
+// 🐇: pennello più piccolo, bisogna colorare quasi tutto (95%); uscire fuori dal bordo non sporca niente
+const BRUSH = () => OC.S * (dotsMode() ? .17 : .1);
+const PAINT_DONE = () => dotsMode() ? .8 : .95;
+let partPaths = [];          // Path2D delle parti nella posizione attuale (per toccarle e per il "ritaglio")
+let paintLayer = null, paintCtx = null, strokes = [], grids = [], partDone = [], colorCount = [], painting = null;
+function buildPartPaths(cx, cy, S) {
+  return obj.parts.map(pt => {
+    const path = new Path2D();
+    for (const poly of pt.polys) { poly.forEach(([x, y], i) => i ? path.lineTo(cx + x * S, cy + y * S) : path.moveTo(cx + x * S, cy + y * S)); path.closePath(); }
+    return path;
+  });
+}
+function partAt(x, y) {
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  let hit = -1;
+  const tries = [[0, 0], [12, 0], [-12, 0], [0, 12], [0, -12], [9, 9], [-9, -9], [9, -9], [-9, 9]]; // tolleranza per le dita piccole
+  outer: for (const [dx, dy] of tries) {
+    for (let k = partPaths.length - 1; k >= 0; k--) if (ctx.isPointInPath(partPaths[k], x + dx, y + dy, obj.parts[k].rule)) { hit = k; break outer; }
+  }
+  ctx.restore();
+  return hit;
+}
+// la parte "visibile" k = dentro k ma non coperta da una parte disegnata sopra
+function visibleIn(k, x, y) {
+  if (!ctx.isPointInPath(partPaths[k], x, y, obj.parts[k].rule)) return false;
+  for (let j = k + 1; j < partPaths.length; j++) if (ctx.isPointInPath(partPaths[j], x, y, obj.parts[j].rule)) return false;
+  return true;
+}
+function resetPaint() {
+  paintLayer = document.createElement('canvas');
+  paintLayer.width = Math.max(1, Math.round(W * DPR)); paintLayer.height = Math.max(1, Math.round(H * DPR));
+  paintCtx = paintLayer.getContext('2d'); paintCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  strokes = []; grids = []; partDone = obj ? obj.parts.map(() => false) : []; colorCount = obj ? obj.parts.map(() => ({})) : [];
+}
+// griglia di puntini dentro ogni parte: serve a misurare quanto è colorata
+function buildPaintGrids() {
+  partPaths = buildPartPaths(OC.x, OC.y, OC.S);
+  const g = Math.max(5, OC.S * .045);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  grids = obj.parts.map((pt, k) => {
+    const pts = [];
+    for (let y = OC.y - OC.S * 1.05; y <= OC.y + OC.S * 1.05; y += g)
+      for (let x = OC.x - OC.S * 1.05; x <= OC.x + OC.S * 1.05; x += g) if (visibleIn(k, x, y)) pts.push([x, y]);
+    return { pts, hit: new Uint8Array(pts.length), n: 0 };
+  });
+  ctx.restore();
+  // parti piccolissime o tutte nascoste: contano come già fatte (non si possono colorare bene col dito)
+  grids.forEach((gr, k) => { if (gr.pts.length < 3) { partDone[k] = true; colors[k] = colors[k] || PALETTE[(k * 3) % PALETTE.length]; fillRest(k, colors[k]); } });
+}
+function paintAt(k, x, y) {
+  if (partDone[k]) return;
+  const col = PALETTE[selColor], r = BRUSH();
+  // la pennellata resta solo dentro la parte (fuori dal bordo non sporca)
+  paintCtx.save(); paintCtx.clip(partPaths[k], obj.parts[k].rule);
+  paintCtx.fillStyle = col; circ(paintCtx, x, y, r); paintCtx.fill();
+  paintCtx.restore();
+  strokes.push({ k, x: (x - OC.x) / OC.S, y: (y - OC.y) / OC.S, c: col });
+  const gr = grids[k]; let added = 0;
+  for (let i = 0; i < gr.pts.length; i++) {
+    if (gr.hit[i]) continue;
+    const q = gr.pts[i];
+    if (Math.abs(x - q[0]) < r && Math.abs(y - q[1]) < r && Math.hypot(x - q[0], y - q[1]) < r) { gr.hit[i] = 1; gr.n++; added++; }
+  }
+  if (added) {
+    colorCount[k][col] = (colorCount[k][col] || 0) + added;
+    if (time - lastScribble > .1) { lastScribble = time; sfx.scribble(); }
+    if (gr.n / gr.pts.length >= PAINT_DONE()) completePart(k);
+  }
+}
+function dominant(k) { let best = null, n = -1; for (const c in colorCount[k]) if (colorCount[k][c] > n) { n = colorCount[k][c]; best = c; } return best || PALETTE[selColor]; }
+// completa i buchini con il colore più usato (sotto alle pennellate, che restano visibili)
+function fillRest(k, col) {
+  paintCtx.save(); paintCtx.clip(partPaths[k], obj.parts[k].rule);
+  paintCtx.globalCompositeOperation = 'destination-over';
+  paintCtx.fillStyle = col; paintCtx.fillRect(OC.x - OC.S * 2, OC.y - OC.S * 2, OC.S * 4, OC.S * 4);
+  paintCtx.restore();
+}
+function completePart(k) {
+  partDone[k] = true; painting = null;
+  colors[k] = dominant(k);
+  fillRest(k, colors[k]);
+  sfx.fill(); sfx.pathDone();
+  const gr = grids[k], c0 = gr.pts[Math.floor(gr.pts.length / 2)] || [OC.x, OC.y];
+  burst(c0[0], c0[1], 16, [colors[k], '#ffffff', '#ffd34d'], 260, 200); // piccola magia
+  if (partDone.every(Boolean)) { phase = 'alive'; aliveT = -.7; } // un attimo, poi prende vita
+}
+// dopo una rotazione dello schermo: ridisegna le pennellate salvate
+function replayPaint() {
+  const old = { strokes, partDone, colorCount, colors: colors.slice() };
+  resetPaint();
+  partPaths = buildPartPaths(OC.x, OC.y, OC.S);
+  colorCount = old.colorCount; partDone = old.partDone; colors = old.colors;
+  for (const s of old.strokes) {
+    const x = OC.x + s.x * OC.S, y = OC.y + s.y * OC.S;
+    paintCtx.save(); paintCtx.clip(partPaths[s.k], obj.parts[s.k].rule); paintCtx.fillStyle = s.c; circ(paintCtx, x, y, BRUSH()); paintCtx.fill(); paintCtx.restore();
+  }
+  strokes = old.strokes;
+  partDone.forEach((d, k) => { if (d) fillRest(k, colors[k]); });
+  if (phase === 'color') { const keep = partDone.slice(); buildPaintGrids(); partDone = keep; }
+}
+
+// ---------- prende vita ----------
+function playLife() {
+  const L0 = obj.life;
+  (sfx[L0.snd] || sfx.chime)();
+  const top = [OC.x, OC.y - OC.S * .9];
+  if (L0.fx === 'stars') burst(OC.x, OC.y - OC.S * .5, 26, ['#ffd34d', '#ff8fb1', '#9fd3ff', '#c9a7f5'], 420, 250);
+  if (L0.fx === 'sparkle') burst(OC.x, OC.y, 24, RAINBOW, 380, 60);
+  if (L0.fx === 'crumbs') burst(OC.x + OC.S * .5, OC.y - OC.S * .3, 18, ['#e8c79c', '#c99a6b', '#fff3dc'], 260, 600);
+  if (L0.fx === 'puff') for (let i = 0; i < 10; i++) parts.push({ x: OC.x + rand(-1, 1) * OC.S * .6, y: OC.y + OC.S * .5, vx: rand(-60, 60), vy: rand(-80, -20), life: 1, max: 1, c: '#ffffff', s: R * rand(.3, .5), star: false, g: -30 });
+}
+function nextObject() { drawnCount++; startObject(); }
+function saveToAlbum() {
+  try {
+    const list = JSON.parse(localStorage.getItem('lolo-album') || '[]');
+    list.unshift({ k: objKey, c: colors.slice() });
+    localStorage.setItem('lolo-album', JSON.stringify(list.slice(0, 30)));
+  } catch (e) {}
+}
+
+// =========================================================
+//  UPDATE
+// =========================================================
+function update(dt) {
+  time += dt; phaseT += dt; hintT += dt;
+  // 🐢: il tratto tra due puntini accesi si disegna in un attimo
+  for (const a of segAnims) {
+    a.t = Math.min(1, a.t + dt / .25);
+    const upTo = Math.round(a.i0 + (a.i1 - a.i0) * a.t);
+    for (let i = a.i0; i <= upTo; i++) a.p.cov[i] = 1;
+  }
+  segAnims = segAnims.filter(a => a.t < 1);
+  if (phase === 'alive') {
+    const before = aliveT; aliveT += dt;
+    if (before < 0 && aliveT >= 0) {
+      playLife(); sfx.fanfare(); saveToAlbum();
+      setTimeout(() => speak('Bravo Lolo!'), 500);
+      addText('Bravo Lolo! ⭐', W / 2, sheet.y + R * .75, '#ff8fb1', R * .8, 2.5);
+      // il nome dell'oggetto, grande (papà lo legge e Lolo lo ripete)
+      const nm = obj.name.charAt(0).toUpperCase() + obj.name.slice(1) + '! ' + (obj.emoji || '');
+      setTimeout(() => addText(nm, W / 2, Math.min(OC.y + OC.S * 1.12, pots[0].y - R * .4), '#6a7bd1', R * .85, 6.5), 700);
+    }
+    // effetti continui
+    const fx = obj.life.fx;
+    if (aliveT > 0 && aliveT < 3) {
+      if (fx === 'steam' && Math.random() < .3) parts.push({ x: OC.x - OC.S * .12 + rand(-1, 1) * OC.S * .25, y: OC.y - OC.S * .55, vx: rand(-10, 10), vy: rand(-70, -40), life: 1.4, max: 1.4, c: 'rgba(255,255,255,.9)', s: R * rand(.18, .3), star: false, g: -10 });
+      if (fx === 'rain' && Math.random() < .6) parts.push({ x: OC.x + rand(-1, 1) * OC.S * .9, y: OC.y - OC.S * .1, vx: 0, vy: rand(150, 250), life: .9, max: .9, c: '#8fc8ff', s: R * .09, star: false, g: 400 });
+      if (fx === 'bubbles' && Math.random() < .25) parts.push({ x: OC.x + rand(-1, 1) * OC.S * .5, y: OC.y - OC.S * .2, vx: rand(-15, 15), vy: rand(-80, -50), life: 1.5, max: 1.5, c: 'rgba(160,215,255,.8)', s: R * rand(.1, .18), star: false, g: -20, ring: true });
+      if (fx === 'notes' && Math.random() < .08) texts.push({ s: pick(['♪', '♫']), x: OC.x + rand(-1, 1) * OC.S, y: OC.y - OC.S * .7, t: 0, life: 1.2, c: pick(['#a98bff', '#ff8fb1', '#7fb8ff']), size: R * .6 });
+    }
+    if (aliveT > 8) nextObject(); // si va avanti da soli dopo un po'
+  }
+  for (const q of parts) { q.vy += q.g * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt; }
+  parts = parts.filter(q => q.life > 0);
+  for (const t of texts) t.t += dt;
+  texts = texts.filter(t => t.t < t.life);
+}
+
+// =========================================================
+//  DISEGNO
+// =========================================================
+function drawTable() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#f6dcbc'); g.addColorStop(1, '#ecc9a2');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(180,130,90,.18)'; ctx.lineWidth = 2;
+  for (let y = H * .08; y < H; y += H * .12) { ctx.beginPath(); ctx.moveTo(0, y); for (let x = 0; x <= W; x += 40) ctx.lineTo(x, y + Math.sin(x * .01 + y) * 3); ctx.stroke(); }
+  // pastelli sul tavolo
+  const crayon = (x, y, a, col) => { ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.fillStyle = col; rr(ctx, -R * .9, -R * .14, R * 1.5, R * .28, R * .08); ctx.fill(); ctx.beginPath(); ctx.moveTo(R * .6, -R * .14); ctx.lineTo(R * .95, 0); ctx.lineTo(R * .6, R * .14); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.fillRect(-R * .5, -R * .14, R * .12, R * .28); ctx.restore(); };
+  crayon(R * 1.4, R * .8, -.3, '#ff8f8f'); crayon(R * 2.6, R * .7, .2, '#8fc8ff'); crayon(W * .5, R * .75, -.1, '#8fe3b0');
+}
+function drawSheet() {
+  ctx.fillStyle = 'rgba(120,80,40,.15)'; rr(ctx, sheet.x + 6, sheet.y + 8, sheet.w, sheet.h, R * .5); ctx.fill();
+  ctx.fillStyle = '#ffffff'; rr(ctx, sheet.x, sheet.y, sheet.w, sheet.h, R * .5); ctx.fill();
+  // nastro adesivo agli angoli
+  ctx.fillStyle = 'rgba(255,226,138,.7)';
+  for (const [x, y, a] of [[sheet.x + R * .4, sheet.y + R * .2, -.6], [sheet.x + sheet.w - R * .4, sheet.y + R * .2, .6]]) { ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.fillRect(-R * .55, -R * .16, R * 1.1, R * .32); ctx.restore(); }
+}
+
+function strokePts(pts, from, to) {
+  ctx.beginPath();
+  const a = Math.max(0, Math.floor(from)), b = Math.min(pts.length - 1, to);
+  ctx.moveTo(pts[a][0], pts[a][1]);
+  for (let i = a + 1; i <= Math.floor(b); i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  if (b % 1 && Math.floor(b) + 1 < pts.length) { const i = Math.floor(b), t = b - i; ctx.lineTo(pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t); }
+  ctx.stroke();
+}
+
+// disegna l'oggetto (anche per l'album): colori, contorni delle parti, dettagli, faccina
+function drawObject(c, o, cx, cy, S, cols, opts) {
+  opts = opts || {};
+  const lw = Math.max(2, S * .035);
+  const pathOf = pt => { const path = new Path2D(); for (const poly of pt.polys) { poly.forEach(([x, y], i) => i ? path.lineTo(cx + x * S, cy + y * S) : path.moveTo(cx + x * S, cy + y * S)); path.closePath(); } return path; };
+  const built = o.parts.map(pathOf);
+  if (opts.ghost) { // l'oggetto intero in grigio chiarissimo: si capisce subito cosa si sta disegnando
+    c.strokeStyle = 'rgba(90,74,106,.14)'; c.lineWidth = lw; c.lineJoin = 'round'; c.lineCap = 'round';
+    built.forEach(path => c.stroke(path));
+    for (const d of [...(o.deco || []), ...o.trace]) { c.beginPath(); d.forEach(([x, y], i) => i ? c.lineTo(cx + x * S, cy + y * S) : c.moveTo(cx + x * S, cy + y * S)); c.stroke(); }
+    return built;
+  }
+  // fondo bianco + colore pieno (album) oppure le pennellate vere del dito (gioco)
+  o.parts.forEach((pt, k) => {
+    c.fillStyle = '#ffffff'; c.fill(built[k], pt.rule);
+    if (!opts.layer && cols[k]) { c.fillStyle = cols[k]; c.fill(built[k], pt.rule); }
+  });
+  if (opts.layer) c.drawImage(opts.layer, 0, 0, W, H);
+  o.parts.forEach((pt, k) => {
+    if (!cols[k]) return;
+    // luce (finestra/casa) quando prende vita
+    if (opts.glow && o.life.glow === k) { c.save(); c.globalAlpha = opts.glow; c.fillStyle = '#fff6b0'; c.fill(built[k], pt.rule); c.restore(); }
+    // riflesso morbido
+    c.save(); c.clip(built[k], pt.rule); c.fillStyle = 'rgba(255,255,255,.22)'; c.fillRect(cx - S * 2, cy - S * 2, S * 4, S * 1.3); c.restore();
+  });
+  if (opts.outlines !== false) {
+    c.strokeStyle = INK; c.lineWidth = lw; c.lineJoin = 'round'; c.lineCap = 'round';
+    built.forEach((path, k) => c.stroke(path));
+    for (const d of (o.deco || [])) { c.beginPath(); d.forEach(([x, y], i) => i ? c.lineTo(cx + x * S, cy + y * S) : c.moveTo(cx + x * S, cy + y * S)); c.stroke(); }
+    for (const t of o.trace) if (t.length === 2 || !(t[0][0] === t[t.length - 1][0] && t[0][1] === t[t.length - 1][1])) { c.beginPath(); t.forEach(([x, y], i) => i ? c.lineTo(cx + x * S, cy + y * S) : c.moveTo(cx + x * S, cy + y * S)); c.stroke(); } // linee aperte (manici, aste)
+  }
+  if (opts.face && o.face) drawFace(c, cx + o.face[0] * S, cy + o.face[1] * S, o.face[2] * S, opts.face, opts.time || 0);
+  return built;
+}
+function drawFace(c, x, y, s, k, t) {
+  const sc = easeOutBack(Math.min(1, k)), blink = Math.sin(t * 2.3) > .97 ? .15 : 1;
+  c.save(); c.translate(x, y); c.scale(sc, sc);
+  c.fillStyle = 'rgba(255,110,140,.45)'; circ(c, -s * .62, s * .22, s * .17); c.fill(); circ(c, s * .62, s * .22, s * .17); c.fill();
+  c.fillStyle = '#3d3048';
+  for (const d of [-1, 1]) { ell(c, d * s * .35, -s * .12, s * .12, s * .15 * blink); c.fill(); }
+  if (blink === 1) { c.fillStyle = '#fff'; circ(c, -s * .31, -s * .18, s * .045); c.fill(); circ(c, s * .39, -s * .18, s * .045); c.fill(); }
+  c.strokeStyle = '#3d3048'; c.lineWidth = Math.max(2, s * .1); c.lineCap = 'round';
+  c.beginPath(); c.arc(0, s * .12, s * .3, Math.PI * .15, Math.PI * .85); c.stroke();
+  c.restore();
+}
+
+// movimento dell'oggetto quando prende vita (attorno al suo centro)
+function lifeTransform(anim, t) {
+  const S = OC.S, k = Math.max(0, 1 - t / 3); // si calma dopo 3 secondi
+  ctx.translate(OC.x, OC.y);
+  switch (anim) {
+    case 'bounce': { const b = Math.abs(Math.sin(t * 5)); ctx.translate(0, -b * S * .35 * k); if (b < .2) ctx.scale(1 + .1 * k, 1 - .1 * k); break; }
+    case 'pulse': ctx.scale(1 + Math.sin(t * 6) * .07 * k, 1 + Math.sin(t * 6) * .07 * k); break;
+    case 'roll': ctx.translate(Math.sin(t * 2) * S * .35 * k, 0); ctx.rotate(Math.sin(t * 2) * 1.6 * k); break;
+    case 'wobble': ctx.rotate(Math.sin(t * 10) * .12 * k); break;
+    case 'shake': ctx.translate(Math.sin(t * 50) * S * .03 * k, 0); ctx.rotate(Math.sin(t * 40) * .05 * k); break;
+    case 'spin': ctx.rotate((1 - Math.pow(1 - Math.min(1, t / 2), 3)) * TAU * 2); break;
+    case 'hop': ctx.translate(0, -Math.abs(Math.sin(t * 4)) * S * .3 * k); break;
+    case 'squash': { const q = Math.sin(t * 7) * .14 * k; ctx.scale(1 + q, 1 - q); break; }
+    case 'flip': ctx.scale(1 - Math.abs(Math.sin(t * 5)) * .6 * k, 1); break;
+    case 'wave': ctx.transform(1, 0, Math.sin(t * 7) * .18 * k, 1, 0, 0); break;
+    case 'drive': ctx.translate(Math.sin(t * 2.2) * S * .55 * k, -Math.abs(Math.sin(t * 14)) * S * .02); break;
+    case 'sail': case 'swim': ctx.translate(Math.sin(t * 1.6) * S * .4 * k, Math.sin(t * 4) * S * .05); ctx.rotate(Math.sin(t * 4) * .06); break;
+    case 'walk': ctx.translate(Math.sin(t * 3) * S * .3 * k, -Math.abs(Math.sin(t * 6)) * S * .12 * k); break;
+    case 'bloom': { const b = t < .6 ? .6 + .4 * easeOutBack(t / .6) : 1 + Math.sin(t * 5) * .05 * k; ctx.scale(b, b); break; }
+  }
+  ctx.translate(-OC.x, -OC.y);
+}
+
+function drawTraceGuides() {
+  const lw = Math.max(3, OC.S * .04);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const pulse = .5 + .5 * Math.sin(time * 5);
+  for (const p of paths) {
+    // guida tratteggiata (tutte le linee si possono fare, in qualsiasi ordine)
+    if (!p.done) {
+      ctx.strokeStyle = 'rgba(169,139,255,.65)';
+      ctx.lineWidth = lw * .8; ctx.setLineDash([lw * .3, lw * 2.2]);
+      strokePts(p.s, 0, p.s.length - 1); ctx.setLineDash([]);
+    }
+    // i pezzi già disegnati (anche sparsi: si può partire da dove si vuole)
+    ctx.strokeStyle = INK; ctx.lineWidth = lw;
+    let i = 0;
+    while (i < p.cov.length) {
+      if (!p.cov[i]) { i++; continue; }
+      let j = i; while (j + 1 < p.cov.length && p.cov[j + 1]) j++;
+      if (j > i) strokePts(p.s, i, j); else { ctx.fillStyle = INK; circ(ctx, p.s[i][0], p.s[i][1], lw * .5); ctx.fill(); }
+      i = j + 1;
+    }
+    if (dotsMode() && !p.done) { // 🐢: tutti i puntini ben visibili; quelli ancora spenti brillano
+      p.dots.forEach((di, k) => {
+        const q = p.s[di];
+        if (p.lit[k]) { ctx.fillStyle = INK; circ(ctx, q[0], q[1], lw * 1.05); ctx.fill(); return; }
+        const ph = .5 + .5 * Math.sin(time * 4 + k);
+        ctx.fillStyle = `rgba(255,211,77,${.3 + .2 * ph})`; circ(ctx, q[0], q[1], lw * (2.6 + ph * .8)); ctx.fill();
+        ctx.fillStyle = '#ffd34d'; circ(ctx, q[0], q[1], lw * 1.6); ctx.fill();
+        ctx.strokeStyle = '#ffffff'; ctx.lineWidth = lw * .45; circ(ctx, q[0], q[1], lw * 1.6); ctx.stroke();
+      });
+    }
+  }
+  // 🐇: un piccolo luccichio sulla linea finché non si comincia (invito a ripassare)
+  if (!dotsMode() && paths.every(p => !p.cov.some(Boolean))) {
+    const p = paths[0], q = p.s[Math.floor((time * 20) % p.s.length)];
+    ctx.fillStyle = `rgba(255,211,77,${.5 + .3 * pulse})`; circ(ctx, q[0], q[1], lw * 2.2); ctx.fill();
+  }
+}
+
+// quanto manca: un pallino per parte che si riempie mentre si colora
+function drawPaintMeter() {
+  const n = obj.parts.length, r = Math.max(9, R * .22), y = sheet.y + R * 1.45;
+  for (let k = 0; k < n; k++) {
+    const x = W / 2 + (k - (n - 1) / 2) * r * 3, g = grids[k];
+    const f = partDone[k] ? 1 : g && g.pts.length ? Math.min(1, g.n / g.pts.length / PAINT_DONE()) : 0;
+    ctx.fillStyle = '#efe9f7'; circ(ctx, x, y, r); ctx.fill();
+    if (f > 0) { ctx.fillStyle = partDone[k] ? (colors[k] || '#ffd34d') : PALETTE[selColor]; ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + f * TAU); ctx.closePath(); ctx.fill(); }
+    if (partDone[k]) { ctx.strokeStyle = '#fff'; ctx.lineWidth = r * .25; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(x - r * .4, y); ctx.lineTo(x - r * .1, y + r * .35); ctx.lineTo(x + r * .45, y - r * .35); ctx.stroke(); }
+  }
+}
+function drawPots() {
+  for (let i = 0; i < pots.length; i++) {
+    const o = pots[i], sel = i === selColor, lift = sel ? -o.r * .25 : 0;
+    ctx.save(); ctx.translate(o.x, o.y + lift);
+    if (sel) { ctx.fillStyle = 'rgba(169,139,255,.25)'; circ(ctx, 0, 0, o.r * 1.35); ctx.fill(); }
+    ctx.fillStyle = '#e9e4f2'; rr(ctx, -o.r * .9, -o.r * .2, o.r * 1.8, o.r * 1.1, o.r * .3); ctx.fill();
+    ctx.fillStyle = o.c; ell(ctx, 0, -o.r * .2, o.r * .9, o.r * .45); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.5)'; ell(ctx, -o.r * .3, -o.r * .3, o.r * .25, o.r * .1); ctx.fill();
+    if (sel) { ctx.strokeStyle = INK; ctx.lineWidth = 3; rr(ctx, -o.r * .9, -o.r * .2, o.r * 1.8, o.r * 1.1, o.r * .3); ctx.stroke(); }
+    ctx.restore();
+  }
+}
+function nextBtn() { const r = Math.max(30, R * .75); return { x: sheet.x + sheet.w - r * 1.4, y: sheet.y + sheet.h - r * 1.4, r }; }
+function nextBtnHit(x, y) { const b = nextBtn(); return Math.hypot(x - b.x, y - b.y) < b.r * 1.3; }
+function drawNextBtn() {
+  if (phase !== 'alive' || aliveT < 1.5) return;
+  const b = nextBtn(), k = Math.min(1, (aliveT - 1.5) / .3), p = 1 + Math.sin(time * 4) * .05;
+  ctx.save(); ctx.translate(b.x, b.y); ctx.scale(easeOutBack(k) * p, easeOutBack(k) * p);
+  ctx.fillStyle = '#5fc48a'; circ(ctx, 0, b.r * .12, b.r); ctx.fill();
+  ctx.fillStyle = '#8fe3b0'; circ(ctx, 0, 0, b.r); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(-b.r * .3, -b.r * .45); ctx.lineTo(b.r * .5, 0); ctx.lineTo(-b.r * .3, b.r * .45); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function drawParts() {
+  for (const q of parts) {
+    ctx.globalAlpha = clamp(q.life / q.max, 0, 1);
+    if (q.ring) { ctx.strokeStyle = q.c; ctx.lineWidth = 2; circ(ctx, q.x, q.y, q.s); ctx.stroke(); }
+    else { ctx.fillStyle = q.c; if (q.star) { starPath(ctx, q.x, q.y, q.s, q.life * 3); ctx.fill(); } else { circ(ctx, q.x, q.y, q.s * .6); ctx.fill(); } }
+  }
+  ctx.globalAlpha = 1;
+}
+function drawTexts() {
+  for (const t of texts) {
+    const k = t.t < .15 ? easeOutBack(t.t / .15) : 1, a = t.t > t.life - .3 ? (t.life - t.t) / .3 : 1;
+    ctx.save(); ctx.globalAlpha = clamp(a, 0, 1); ctx.translate(t.x, t.y - t.t * 20); ctx.scale(k, k);
+    ctx.font = `bold ${Math.round(t.size)}px "Comic Sans MS","Chalkboard SE",system-ui,sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = t.size * .22; ctx.strokeText(t.s, 0, 0);
+    ctx.fillStyle = t.c; ctx.fillText(t.s, 0, 0); ctx.restore();
+  }
+}
+
+function draw() {
+  drawTable();
+  drawSheet();
+  const showParts = phase !== 'trace';
+  if (showParts) {
+    ctx.save();
+    if (phase === 'alive' && aliveT > 0) lifeTransform(obj.life.anim, aliveT);
+    const glow = phase === 'alive' && aliveT > 0 ? .5 + .4 * Math.sin(aliveT * 5) : 0;
+    const face = phase === 'alive' && aliveT > 0 ? aliveT / .4 : 0;
+    drawObject(ctx, obj, OC.x, OC.y, OC.S, colors, { layer: paintLayer, face, glow, time });
+    ctx.restore();
+    if (phase === 'color') {
+      // le parti ancora da finire brillano un po', per invitare a colorarle
+      ctx.save(); ctx.globalAlpha = .1 + .08 * Math.sin(time * 4); ctx.fillStyle = PALETTE[selColor];
+      obj.parts.forEach((pt, k) => { if (!partDone[k]) ctx.fill(partPaths[k], pt.rule); });
+      ctx.restore();
+      drawPaintMeter();
+      drawPots();
+    }
+  } else {
+    drawObject(ctx, obj, OC.x, OC.y, OC.S, [], { ghost: true });
+    drawTraceGuides();
+  }
+  drawParts();
+  drawNextBtn();
+  drawTexts();
+}
+
+// =========================================================
+//  AVVIO / UI
+// =========================================================
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(.05, Math.max(0, (now - last) / 1000)); last = now;
+  update(dt); draw();
+  requestAnimationFrame(frame);
+}
+
+document.getElementById('play').addEventListener('click', () => {
+  initAudio(); started = true;
+  document.getElementById('start').classList.add('hide');
+  goFullscreen(); sfx.fanfare();
+  startObject();
+});
+
+const btnMute = document.getElementById('btnMute');
+btnMute.addEventListener('click', () => {
+  muted = !muted; btnMute.textContent = muted ? '🔇' : '🔊';
+  btnMute.setAttribute('aria-label', muted ? "Accendi l'audio" : "Spegni l'audio");
+  if (muted && 'speechSynthesis' in window) speechSynthesis.cancel();
+});
+const btnSpeed = document.getElementById('btnSpeed');
+function showSpeed() { btnSpeed.textContent = SPD().icon; btnSpeed.setAttribute('aria-label', SPD().label + ' (tocca per cambiare)'); btnSpeed.title = SPD().label; }
+btnSpeed.addEventListener('click', () => {
+  speedKey = SPEED_ORDER[(SPEED_ORDER.indexOf(speedKey) + 1) % SPEED_ORDER.length];
+  try { localStorage.setItem('lolo-speed', speedKey); } catch (e) {}
+  showSpeed();
+  if (started && phase === 'trace') startObject(objKey); // ricomincia il contorno nel nuovo modo
+});
+showSpeed();
+
+// album dei disegni
+const album = document.getElementById('album');
+function openAlbum() {
+  const grid = document.getElementById('albumGrid'); grid.innerHTML = '';
+  let list = []; try { list = JSON.parse(localStorage.getItem('lolo-album') || '[]'); } catch (e) {}
+  document.getElementById('albumEmpty').style.display = list.length ? 'none' : 'block';
+  for (const it of list) {
+    const o = OBJECTS[it.k]; if (!o) continue;
+    const c = document.createElement('canvas'); c.width = 300; c.height = 300;
+    c.setAttribute('aria-label', o.name);
+    const g = c.getContext('2d');
+    drawObject(g, o, 150, 132, 92, it.c, { face: 1 });
+    g.font = 'bold 30px "Comic Sans MS","Chalkboard SE",system-ui,sans-serif'; g.textAlign = 'center'; g.fillStyle = '#6a7bd1';
+    g.fillText(o.name.charAt(0).toUpperCase() + o.name.slice(1) + ' ' + (o.emoji || ''), 150, 282);
+    grid.appendChild(c);
+  }
+  album.classList.add('show');
+}
+document.getElementById('btnAlbum').addEventListener('click', openAlbum);
+document.getElementById('albumClose').addEventListener('click', () => album.classList.remove('show'));
+album.addEventListener('click', e => { if (e.target === album) album.classList.remove('show'); });
+
+// schermo intero: lo stesso bottone entra ed esce
+const btnFull = document.getElementById('btnFull');
+const ICON_FULL = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="#5a6aa8" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+const ICON_EXIT = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="#5a6aa8" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
+const isFull = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+function goFullscreen() { const el = document.documentElement, fn = el.requestFullscreen || el.webkitRequestFullscreen; if (!fn) return; try { const r = fn.call(el); if (r && r.catch) r.catch(() => {}); } catch (e) {} }
+function exitFullscreen() { const fn = document.exitFullscreen || document.webkitExitFullscreen; if (!fn) return; try { const r = fn.call(document); if (r && r.catch) r.catch(() => {}); } catch (e) {} }
+function showFull() { const on = isFull(); btnFull.innerHTML = on ? ICON_EXIT : ICON_FULL; btnFull.setAttribute('aria-label', on ? 'Esci dallo schermo intero' : 'Schermo intero'); btnFull.title = on ? 'Esci dallo schermo intero' : 'Schermo intero'; }
+btnFull.addEventListener('click', () => { if (isFull()) exitFullscreen(); else goFullscreen(); });
+document.addEventListener('fullscreenchange', showFull);
+document.addEventListener('webkitfullscreenchange', showFull);
+if (!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)) btnFull.style.display = 'none';
+showFull();
+
+let resizeTimer = null;
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(layout, 150); });
+
+layout();
+startObject('palla');
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
